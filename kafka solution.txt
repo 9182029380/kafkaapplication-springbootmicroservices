@@ -1,0 +1,615 @@
+To provide you with a complete code base for a Spring Boot application with Kafka microservices for flight scheduling, airport ATC, and runway management, I'll break it down into four main components:
+
+1. **Flight Scheduling Service**
+2. **Airport ATC Service**
+3. **Runway Management Service**
+4. **Notification Service**
+
+Below is the code structure for each service, including the necessary configurations, entities, controllers, services, and Kafka integration. I'll also explain the architecture and the flow between these services.
+
+### 1. **Flight Scheduling Service**
+
+This service is responsible for managing flight schedules.
+
+#### **1.1. Project Structure**
+```
+flight-scheduling-service
+│   pom.xml
+└───src
+    └───main
+        ├───java
+        │   └───com.example.flightscheduling
+        │       │   FlightSchedulingApplication.java
+        │       ├───controller
+        │       │       FlightController.java
+        │       ├───model
+        │       │       Flight.java
+        │       ├───service
+        │       │       FlightService.java
+        │       └───kafka
+        │               KafkaProducerConfig.java
+        └───resources
+            │   application.properties
+```
+
+#### **1.2. `FlightSchedulingApplication.java`**
+```java
+package com.example.flightscheduling;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class FlightSchedulingApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(FlightSchedulingApplication.class, args);
+    }
+}
+```
+
+#### **1.3. `Flight.java` (Model)**
+```java
+package com.example.flightscheduling.model;
+
+import java.time.LocalDateTime;
+
+public class Flight {
+    private String flightNumber;
+    private String departureLocation;
+    private String arrivalLocation;
+    private LocalDateTime departureTime;
+    private LocalDateTime arrivalTime;
+
+    // Getters and Setters
+}
+```
+
+#### **1.4. `FlightController.java` (Controller)**
+```java
+package com.example.flightscheduling.controller;
+
+import com.example.flightscheduling.model.Flight;
+import com.example.flightscheduling.service.FlightService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/flights")
+public class FlightController {
+
+    @Autowired
+    private FlightService flightService;
+
+    @PostMapping("/schedule")
+    public String scheduleFlight(@RequestBody Flight flight) {
+        flightService.scheduleFlight(flight);
+        return "Flight scheduled successfully!";
+    }
+}
+```
+
+#### **1.5. `FlightService.java` (Service)**
+```java
+package com.example.flightscheduling.service;
+
+import com.example.flightscheduling.model.Flight;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.stereotype.Service;
+
+@Service
+public class FlightService {
+
+    @Autowired
+    private KafkaTemplate<String, Flight> kafkaTemplate;
+
+    private static final String TOPIC = "flight-schedule";
+
+    public void scheduleFlight(Flight flight) {
+        kafkaTemplate.send(TOPIC, flight);
+    }
+}
+```
+
+#### **1.6. `KafkaProducerConfig.java` (Kafka Configuration)**
+```java
+package com.example.flightscheduling.kafka;
+
+import com.example.flightscheduling.model.Flight;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.support.serializer.JsonSerializer;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Configuration
+public class KafkaProducerConfig {
+
+    @Bean
+    public ProducerFactory<String, Flight> producerFactory() {
+        Map<String, Object> configProps = new HashMap<>();
+        configProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        configProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        configProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
+        return new DefaultKafkaProducerFactory<>(configProps);
+    }
+
+    @Bean
+    public KafkaTemplate<String, Flight> kafkaTemplate() {
+        return new KafkaTemplate<>(producerFactory());
+    }
+}
+```
+
+#### **1.7. `application.properties`**
+```properties
+spring.kafka.bootstrap-servers=localhost:9092
+```
+
+### 2. **Airport ATC Service**
+
+This service listens to the flight scheduling Kafka topic and manages runway assignments.
+
+#### **2.1. Project Structure**
+```
+airport-atc-service
+│   pom.xml
+└───src
+    └───main
+        ├───java
+        │   └───com.example.airportatc
+        │       │   AirportAtcApplication.java
+        │       ├───controller
+        │       │       AtcController.java
+        │       ├───kafka
+        │       │       KafkaConsumerConfig.java
+        │       ├───service
+        │       │       AtcService.java
+        │       └───model
+        │               RunwayAssignment.java
+        └───resources
+            │   application.properties
+```
+
+#### **2.2. `AirportAtcApplication.java`**
+```java
+package com.example.airportatc;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class AirportAtcApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(AirportAtcApplication.class, args);
+    }
+}
+```
+
+#### **2.3. `RunwayAssignment.java` (Model)**
+```java
+package com.example.airportatc.model;
+
+public class RunwayAssignment {
+    private String flightNumber;
+    private String runway;
+
+    // Getters and Setters
+}
+```
+
+#### **2.4. `AtcService.java` (Service)**
+```java
+package com.example.airportatc.service;
+
+import com.example.airportatc.model.RunwayAssignment;
+import com.example.flightscheduling.model.Flight;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.stereotype.Service;
+
+@Service
+public class AtcService {
+
+    @KafkaListener(topics = "flight-schedule", groupId = "atc-group")
+    public void handleFlightScheduling(Flight flight) {
+        // Logic to manage runway assignments
+        RunwayAssignment assignment = new RunwayAssignment();
+        assignment.setFlightNumber(flight.getFlightNumber());
+        assignment.setRunway("Runway-1"); // Assign runway based on logic
+
+        System.out.println("Assigned " + assignment.getRunway() + " to flight " + assignment.getFlightNumber());
+    }
+}
+```
+
+#### **2.5. `KafkaConsumerConfig.java` (Kafka Configuration)**
+```java
+package com.example.airportatc.kafka;
+
+import com.example.flightscheduling.model.Flight;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.annotation.EnableKafka;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
+import org.springframework.kafka.support.serializer.JsonDeserializer;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@EnableKafka
+@Configuration
+public class KafkaConsumerConfig {
+
+    @Bean
+    public ConsumerFactory<String, Flight> consumerFactory() {
+        Map<String, Object> config = new HashMap<>();
+
+        config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        config.put(ConsumerConfig.GROUP_ID_CONFIG, "atc-group");
+        config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+
+        return new DefaultKafkaConsumerFactory<>(config, new StringDeserializer(),
+                new JsonDeserializer<>(Flight.class));
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, Flight> kafkaListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, Flight> factory = new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(consumerFactory());
+        return factory;
+    }
+}
+```
+
+#### **2.6. `application.properties`**
+```properties
+spring.kafka.bootstrap-servers=localhost:9092
+spring.kafka.consumer.group-id=atc-group
+spring.kafka.consumer.auto-offset-reset=earliest
+```
+
+### 3. **Runway Management Service**
+
+This service manages runway availability and listens for Kafka topics related to runway assignments.
+
+#### **3.1. Project Structure**
+```
+runway-management-service
+│   pom.xml
+└───src
+    └───main
+        ├───java
+        │   └───com.example.runwaymanagement
+        │       │   RunwayManagementApplication.java
+        │       ├───controller
+        │       │       RunwayController.java
+        │       ├───kafka
+        │       │       KafkaConsumerConfig.java
+        │       ├───model
+        │       │       Runway.java
+        │       └───service
+        │               RunwayService.java
+        └───resources
+            │   application.properties
+```
+
+#### **3.2. `RunwayManagementApplication.java`**
+```java
+package com.example.runwaymanagement;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.Spring
+
+BootApplication;
+
+@SpringBootApplication
+public class RunwayManagementApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(RunwayManagementApplication.class, args);
+    }
+}
+```
+
+#### **3.3. `Runway.java` (Model)**
+```java
+package com.example.runwaymanagement.model;
+
+public class Runway {
+    private String runwayId;
+    private String status; // Available, Occupied
+
+    // Getters and Setters
+}
+```
+
+#### **3.4. `RunwayService.java` (Service)**
+```java
+package com.example.runwaymanagement.service;
+
+import com.example.runwaymanagement.model.Runway;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.stereotype.Service;
+
+@Service
+public class RunwayService {
+
+    @KafkaListener(topics = "runway-status", groupId = "runway-group")
+    public void handleRunwayStatus(Runway runway) {
+        // Logic to update runway status based on the event
+        System.out.println("Runway " + runway.getRunwayId() + " is now " + runway.getStatus());
+    }
+}
+```
+
+#### **3.5. `KafkaConsumerConfig.java` (Kafka Configuration)**
+```java
+package com.example.runwaymanagement.kafka;
+
+import com.example.runwaymanagement.model.Runway;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.annotation.EnableKafka;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
+import org.springframework.kafka.support.serializer.JsonDeserializer;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@EnableKafka
+@Configuration
+public class KafkaConsumerConfig {
+
+    @Bean
+    public ConsumerFactory<String, Runway> consumerFactory() {
+        Map<String, Object> config = new HashMap<>();
+
+        config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        config.put(ConsumerConfig.GROUP_ID_CONFIG, "runway-group");
+        config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+
+        return new DefaultKafkaConsumerFactory<>(config, new StringDeserializer(),
+                new JsonDeserializer<>(Runway.class));
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, Runway> kafkaListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, Runway> factory = new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(consumerFactory());
+        return factory;
+    }
+}
+```
+
+#### **3.6. `application.properties`**
+```properties
+spring.kafka.bootstrap-servers=localhost:9092
+spring.kafka.consumer.group-id=runway-group
+spring.kafka.consumer.auto-offset-reset=earliest
+```
+
+### 4. **Notification Service**
+
+This service listens for Kafka topics and sends notifications related to flight and runway statuses.
+
+#### **4.1. Project Structure**
+```
+notification-service
+│   pom.xml
+└───src
+    └───main
+        ├───java
+        │   └───com.example.notification
+        │       │   NotificationApplication.java
+        │       ├───kafka
+        │       │       KafkaConsumerConfig.java
+        │       └───service
+        │               NotificationService.java
+        └───resources
+            │   application.properties
+```
+
+#### **4.2. `NotificationApplication.java`**
+```java
+package com.example.notification;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class NotificationApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(NotificationApplication.class, args);
+    }
+}
+```
+
+#### **4.3. `NotificationService.java` (Service)**
+```java
+package com.example.notification.service;
+
+import com.example.flightscheduling.model.Flight;
+import com.example.runwaymanagement.model.Runway;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.stereotype.Service;
+
+@Service
+public class NotificationService {
+
+    @KafkaListener(topics = "flight-schedule", groupId = "notification-group")
+    public void notifyFlight(Flight flight) {
+        // Logic to send notifications related to flight schedules
+        System.out.println("Notification: Flight " + flight.getFlightNumber() + " scheduled.");
+    }
+
+    @KafkaListener(topics = "runway-status", groupId = "notification-group")
+    public void notifyRunway(Runway runway) {
+        // Logic to send notifications related to runway status
+        System.out.println("Notification: Runway " + runway.getRunwayId() + " is " + runway.getStatus());
+    }
+}
+```
+
+#### **4.4. `KafkaConsumerConfig.java` (Kafka Configuration)**
+```java
+package com.example.notification.kafka;
+
+import com.example.flightscheduling.model.Flight;
+import com.example.runwaymanagement.model.Runway;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.annotation.EnableKafka;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
+import org.springframework.kafka.support.serializer.JsonDeserializer;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@EnableKafka
+@Configuration
+public class KafkaConsumerConfig {
+
+    @Bean
+    public ConsumerFactory<String, Flight> flightConsumerFactory() {
+        Map<String, Object> config = new HashMap<>();
+
+        config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        config.put(ConsumerConfig.GROUP_ID_CONFIG, "notification-group");
+        config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+
+        return new DefaultKafkaConsumerFactory<>(config, new StringDeserializer(),
+                new JsonDeserializer<>(Flight.class));
+    }
+
+    @Bean
+    public ConsumerFactory<String, Runway> runwayConsumerFactory() {
+        Map<String, Object> config = new HashMap<>();
+
+        config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        config.put(ConsumerConfig.GROUP_ID_CONFIG, "notification-group");
+        config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+
+        return new DefaultKafkaConsumerFactory<>(config, new StringDeserializer(),
+                new JsonDeserializer<>(Runway.class));
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, Flight> flightKafkaListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, Flight> factory = new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(flightConsumerFactory());
+        return factory;
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, Runway> runwayKafkaListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, Runway> factory = new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(runwayConsumerFactory());
+        return factory;
+    }
+}
+```
+
+#### **4.5. `application.properties`**
+```properties
+spring.kafka.bootstrap-servers=localhost:9092
+spring.kafka.consumer.group-id=notification-group
+spring.kafka.consumer.auto-offset-reset=earliest
+```
+
+### **Architecture and Flow**
+
+1. **Flight Scheduling Service**: Manages flight schedules and publishes the details to the `flight-schedule` Kafka topic.
+2. **Airport ATC Service**: Listens to the `flight-schedule` topic, assigns runways, and publishes the runway assignment to the `runway-status` topic.
+3. **Runway Management Service**: Listens to the `runway-status` topic to manage the availability of runways.
+4. **Notification Service**: Listens to both `flight-schedule` and `runway-status` topics and sends notifications accordingly.
+
+### **Running the Application**
+
+1. Start Kafka on your local machine or server.
+2. Run each microservice in a separate terminal or IDE instance.
+3. Use Postman or a similar tool to test the endpoints provided by the Flight Scheduling Service.
+4. Monitor the logs for output from the ATC, Runway Management, and Notification services.
+
+This complete setup should help you build and run a distributed system for flight scheduling and airport management using Kafka and Spring Boot.
+
+
+
+
+The output of this application would be the interactions between the different microservices as they handle flight scheduling, runway management, and notifications. Here's what you can expect when running the application:
+
+### **1. Flight Scheduling Service**
+When a new flight is scheduled (via a POST request to the `FlightController`), the `FlightSchedulingService` will:
+- Log the details of the scheduled flight.
+- Publish the flight details to the `flight-schedule` Kafka topic.
+
+Example log output:
+```
+INFO: Flight AI101 scheduled from JFK to LAX at 10:00 AM.
+INFO: Published flight details to Kafka topic 'flight-schedule'.
+```
+
+### **2. Airport ATC Service**
+The `ATCService` listens to the `flight-schedule` topic for new flight schedules. Upon receiving a flight schedule, it will:
+- Assign a runway to the flight.
+- Log the assigned runway details.
+- Publish the runway assignment to the `runway-status` Kafka topic.
+
+Example log output:
+```
+INFO: Received flight AI101 from Kafka topic 'flight-schedule'.
+INFO: Assigned Runway R1 to flight AI101.
+INFO: Published runway assignment to Kafka topic 'runway-status'.
+```
+
+### **3. Runway Management Service**
+The `RunwayService` listens to the `runway-status` topic. When a runway assignment is received, it will:
+- Update the status of the runway (e.g., mark it as "Occupied").
+- Log the runway status.
+
+Example log output:
+```
+INFO: Runway R1 is now Occupied.
+```
+
+### **4. Notification Service**
+The `NotificationService` listens to both the `flight-schedule` and `runway-status` topics. When it receives messages from these topics, it will:
+- Log the notifications about flight schedules and runway statuses.
+
+Example log output:
+```
+INFO: Notification: Flight AI101 scheduled from JFK to LAX at 10:00 AM.
+INFO: Notification: Runway R1 is Occupied for flight AI101.
+```
+
+### **Interaction Flow Example**
+If you schedule a flight (e.g., AI101 from JFK to LAX at 10:00 AM):
+- The `Flight Scheduling Service` will publish this flight information.
+- The `Airport ATC Service` will assign a runway to this flight and publish the runway status.
+- The `Runway Management Service` will update and log the runway status.
+- The `Notification Service` will log notifications related to both the flight schedule and runway status.
+
+This flow showcases the asynchronous communication and coordination between microservices in the system, facilitated by Kafka.
